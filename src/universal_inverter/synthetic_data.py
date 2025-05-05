@@ -5,31 +5,43 @@ from jax import jit
 import jax
 
 #@jit
-def compute_s0(g, tau, b, tau2, d, change_point=5):
+
+def compute_s_np(g, tau, b, tau2, d, change_point=5):
+    # Ensure positive time constants with safe minimum
+    tau_safe = np.maximum(tau, 1e-7)
+    tau2_safe = np.maximum(tau2, 1e-7)
+    
+    # Safe exponential with input clipping
+    def safe_exp(x):
+        return np.exp(np.clip(x, -50, 50))  # Prevent overflow/underflow
+    
+    # Precompute common terms safely
+    c = (1 - safe_exp(-change_point / tau_safe)) * b
+    
+# Compute intermediate terms with stabilization
+    exp_term1 = safe_exp(-g / tau_safe)
+    exp_term2 = safe_exp(-(g - change_point) / tau2_safe)
+        
+    m1 = (1 - exp_term1) * b
+    m2 = c + (1 - exp_term2) * (d - c)
+    
+    # Use log-space for small values
     mask_neg = g < 0
     mask_mid = (g >= 0) & (g < change_point)
     
-    c = (1 - jnp.exp(-change_point / tau)) * b  # Precompute continuation value
-    
-    #jax.debug.print("{g} {tau} {b} {tau2} {d}",g=g ,tau=tau, b=b, tau2=tau2,d=d)
-
-    print(g, tau, b, tau2, d)
-    m1 = (1 - jnp.exp(-g / tau)) * b
-    m2 = c + (1 - jnp.exp(-(g - change_point)/(tau2+1e-7))) * (d - c)
-    jax.debug.print("{g} {m1} {m2} {tau} {b} {tau2} {d}",m1=m1,m2=m2,g=g ,tau=tau, b=b, tau2=tau2,d=d)
-    s = jnp.where(
+    return np.where(
         mask_neg,
         0.0,
-        jnp.where(
+        np.where(
             mask_mid,
-            (1 - jnp.exp(-g / tau)) * b,
-            c + (1 - jnp.exp(-(g - change_point)/(tau2+1e-7))) * (d - c)
+            m1,
+            np.where(
+                d > c,  # Prevent reversed subtraction
+                m2,
+                c + (exp_term2 - 1) * (c - d)  # Alternative form when d < c
+            )
         )
     )
- 
-
-    
-    return s
 
 def compute_s(g, tau, b, tau2, d, change_point=5):
     # Ensure positive time constants with safe minimum

@@ -125,6 +125,50 @@ import jax.numpy as jnp
 import jax.scipy.special
 from typing import Optional
 
+
+
+def compute_mrt_from_arrival_time(candidates,lambda_param):
+    sorted_candidates = jnp.sort(candidates, axis=-1)
+    K = sorted_candidates.shape[-1]
+
+    t1 = sorted_candidates[..., 0]
+    sorted_candidates = sorted_candidates-t1[...,None]
+
+    if K == 1:
+        return t1
+
+    i_indices = jnp.arange(K-1)
+    i_plus_1 = (i_indices + 1).astype(jnp.float32)
+    i_plus_2 = i_plus_1 + 1
+
+    t_i = sorted_candidates[..., i_indices]
+    t_next = sorted_candidates[..., i_indices + 1]
+    cum_sums = jnp.cumsum(sorted_candidates, axis=-1)
+    S_i = cum_sums[..., i_indices]
+
+    # Numerical stability improvements
+    lambda_safe = jnp.maximum(lambda_param, 1e-8)
+    
+    # 1. Prevent large exponents using safe scaling
+    A = lambda_safe * (S_i - i_plus_1 * t_i)
+    B = lambda_safe * (i_plus_1 * t_i - i_plus_2 * t_next)
+    
+    # 2. Log-space computation with stability guards
+    log_terms = (
+        -jnp.log(i_plus_1 + 1e-12)  # Prevent log(0)
+        + A
+        + jnp.log(-jnp.expm1(B)+ 1e-12)  # Safer than log(-expm1(B))
+    )
+
+    # 3. Log-sum-exp trick for numerical stability
+    max_log = jnp.max(log_terms, axis=-1, keepdims=True)
+    log_terms_shifted = log_terms - max_log
+    terms = jnp.exp(log_terms_shifted)
+    sum_terms = jnp.sum(terms, axis=-1) * jnp.exp(max_log.squeeze(-1))
+
+    # 4. Final computation with output stabilization
+    return t1 + (1.0 / lambda_safe) * jnp.nan_to_num(sum_terms, nan=0.0, posinf=jnp.inf, neginf=-jnp.inf)
+
 class ReplicationActivationBase(PiecewiseLinear):
     """
     Base class containing shared functionality for all replication activation variants
@@ -134,48 +178,8 @@ class ReplicationActivationBase(PiecewiseLinear):
         super().__init__(coarse_bins, xmin, xmax)
         self.window_radius = window_radius
         self.lambda_param = lambda_param + 1e-8  # Prevent division by zero
-
     def compute_mrt_from_arrival_time(self, candidates):
-        sorted_candidates = jnp.sort(candidates, axis=-1)
-        K = sorted_candidates.shape[-1]
-
-        t1 = sorted_candidates[..., 0]
-        sorted_candidates = sorted_candidates-t1[...,None]
-
-        if K == 1:
-            return t1
-
-        i_indices = jnp.arange(K-1)
-        i_plus_1 = (i_indices + 1).astype(jnp.float32)
-        i_plus_2 = i_plus_1 + 1
-
-        t_i = sorted_candidates[..., i_indices]
-        t_next = sorted_candidates[..., i_indices + 1]
-        cum_sums = jnp.cumsum(sorted_candidates, axis=-1)
-        S_i = cum_sums[..., i_indices]
-
-        # Numerical stability improvements
-        lambda_safe = jnp.maximum(self.lambda_param, 1e-8)
-        
-        # 1. Prevent large exponents using safe scaling
-        A = lambda_safe * (S_i - i_plus_1 * t_i)
-        B = lambda_safe * (i_plus_1 * t_i - i_plus_2 * t_next)
-        
-        # 2. Log-space computation with stability guards
-        log_terms = (
-            -jnp.log(i_plus_1 + 1e-12)  # Prevent log(0)
-            + A
-            + jnp.log(-jnp.expm1(B)+ 1e-12)  # Safer than log(-expm1(B))
-        )
-
-        # 3. Log-sum-exp trick for numerical stability
-        max_log = jnp.max(log_terms, axis=-1, keepdims=True)
-        log_terms_shifted = log_terms - max_log
-        terms = jnp.exp(log_terms_shifted)
-        sum_terms = jnp.sum(terms, axis=-1) * jnp.exp(max_log.squeeze(-1))
-
-        # 4. Final computation with output stabilization
-        return t1 + (1.0 / lambda_safe) * jnp.nan_to_num(sum_terms, nan=0.0, posinf=jnp.inf, neginf=-jnp.inf)
+        return compute_mrt_from_arrival_time(candidates,lambda_param=self.lambda_param)
 
 
 class ConstantSpeedReplication(ReplicationActivationBase):
